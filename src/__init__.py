@@ -33,6 +33,7 @@ class AnkiSystemTray:
         self.isMinimizedToTray = False
         self.lastFocusedWidget = mw
         self.explicitlyHiddenWindows = []
+        self.windowVisibilitySnapshot = {}
 
         self._debug_print("Creating tray icon")
         self.trayIcon = self._createTrayIcon()
@@ -104,10 +105,14 @@ class AnkiSystemTray:
         )
 
         if self.isMinimizedToTray:
+            windows_to_show = [
+                w for w in self.explicitlyHiddenWindows if not sip.isdeleted(w)
+            ]
             self._debug_print(
-                f"Showing explicitly hidden windows: {len(self.explicitlyHiddenWindows)} windows"
+                f"Showing explicitly hidden windows: {len(windows_to_show)} windows"
             )
-            self._showWindows(self.explicitlyHiddenWindows)
+            self._showWindows(windows_to_show)
+            self._restoreWindowStates()
         else:
             visible_windows = self._visibleWindows()
             self._debug_print(
@@ -128,6 +133,7 @@ class AnkiSystemTray:
 
     def hideAll(self):
         """Hide all windows."""
+        self._snapshotWindowStates()
         self.explicitlyHiddenWindows = self._visibleWindows()
         self._debug_print(
             f"Hiding all windows: {len(self.explicitlyHiddenWindows)} windows to hide"
@@ -205,6 +211,56 @@ class AnkiSystemTray:
         )
 
         return len(minimized_windows) > 0
+
+    def _snapshotWindowStates(self):
+        """Capture the visibility state of all top-level windows.
+
+        This is a workaround for unexpected Qt behavior: when restoring windows
+        from tray, previously-closed child dialog windows sometimes reappear.
+
+        The root cause is unclear - possibly related to the hide/show hack in
+        _showWindows(), or general Qt parent-child window behavior, or something else.
+
+        By snapshotting window states before hiding, we can restore the exact
+        visibility state after showing windows from tray.
+        """
+        self.windowVisibilitySnapshot = {}
+        all_widgets = QApplication.topLevelWidgets()
+
+        for w in all_widgets:
+            if w.isWindow() and w.children():
+                self.windowVisibilitySnapshot[w] = not w.isHidden()
+                self._debug_print(
+                    f"Snapshotting window {w}: visible={self.windowVisibilitySnapshot[w]}"
+                )
+
+    def _restoreWindowStates(self):
+        """Restore window visibility to match the pre-minimize snapshot.
+
+        This prevents child windows (e.g., Custom Study dialog, Update Add-ons)
+        from reappearing after they were closed by the user.
+
+        The exact cause is unknown, but empirically, some child dialogs become
+        visible again after showing the parent window. This function corrects
+        that by enforcing the visibility state from before minimization.
+        """
+        self._debug_print("Restoring window visibility from snapshot")
+
+        for w, was_visible in self.windowVisibilitySnapshot.items():
+            if sip.isdeleted(w):
+                continue
+
+            is_currently_visible = not w.isHidden()
+            if is_currently_visible and not was_visible:
+                self._debug_print(
+                    f"Hiding window that should not be visible: {w} (was {was_visible}, now {is_currently_visible})"
+                )
+                w.hide()
+            elif not is_currently_visible and was_visible:
+                self._debug_print(
+                    f"Showing window that should be visible: {w} (was {was_visible}, now {is_currently_visible})"
+                )
+                w.show()
 
     def _createTrayIcon(self):
         self._debug_print("Creating system tray icon")
