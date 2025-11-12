@@ -16,19 +16,37 @@ from aqt.main import AnkiQt
 
 
 class AnkiSystemTray:
+    def _debug_print(self, message):
+        """Helper function to print debug messages when debug mode is enabled."""
+        if self.debug:
+            print(f"[MinimizeToTray] DEBUG: {message}")
+
     def __init__(self, mw):
         """Create a system tray with the Anki icon."""
         self.mw = mw
+        config = self.mw.addonManager.getConfig(__name__)
+        self.debug = config.get("debug", False)
+
+        self._debug_print("Initializing AnkiSystemTray")
+
         self.isAnkiFocused = True
         self.isMinimizedToTray = False
         self.lastFocusedWidget = mw
         self.explicitlyHiddenWindows = []
+
+        self._debug_print("Creating tray icon")
         self.trayIcon = self._createTrayIcon()
+
         QApplication.setQuitOnLastWindowClosed(False)
         self._configureMw()
         self.trayIcon.show()
-        config = self.mw.addonManager.getConfig(__name__)
+
+        self._debug_print(
+            f"Configuration: hide_on_startup={config.get('hide_on_startup', False)}, debug={self.debug}"
+        )
+
         if config["hide_on_startup"]:
+            self._debug_print("Hiding all windows on startup")
             self.hideAll()
 
     def onActivated(self, reason):
@@ -44,52 +62,98 @@ class AnkiSystemTray:
         slot is activated. For this reason and to prevent that anki is minimized when not
         focused, on Windows are the windows are never hidden.
         """
+        self._debug_print(f"Tray icon activated with reason: {reason}")
+
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            if (
+            should_show = (
                 not self.isAnkiFocused
                 or self._anyWindowMinimized()
                 or self.isMinimizedToTray
-            ):
+            )
+
+            self._debug_print(
+                f"Decision factors: isAnkiFocused={self.isAnkiFocused}, anyWindowMinimized={self._anyWindowMinimized()}, isMinimizedToTray={self.isMinimizedToTray}"
+            )
+            self._debug_print(f"Should show: {should_show}")
+
+            if should_show:
                 self.showAll()
             elif not sys.platform.startswith("win32"):
+                self._debug_print("Platform is not Windows, hiding all windows")
                 self.hideAll()
 
     def onFocusChanged(self, old, now):
         """Keep track of the focused window in order to refocus it on showAll."""
         self.isAnkiFocused = now is not None
+        self._debug_print(
+            f"Focus changed: old={old}, now={now}, isAnkiFocused={self.isAnkiFocused}"
+        )
         if self.isAnkiFocused:
             self.lastFocusedWidget = now
+            self._debug_print(f"Updated lastFocusedWidget to: {now}")
 
     def onExit(self):
+        self._debug_print("Exit action triggered")
         self.mw.closeEventFromAction = True
         self.mw.close()
 
     def showAll(self):
         """Show all windows."""
+        self._debug_print(
+            f"Showing all windows. isMinimizedToTray={self.isMinimizedToTray}"
+        )
+
         if self.isMinimizedToTray:
+            self._debug_print(
+                f"Showing explicitly hidden windows: {len(self.explicitlyHiddenWindows)} windows"
+            )
             self._showWindows(self.explicitlyHiddenWindows)
         else:
-            self._showWindows(self._visibleWindows())
+            visible_windows = self._visibleWindows()
+            self._debug_print(
+                f"Showing visible windows: {len(visible_windows)} windows"
+            )
+            self._showWindows(visible_windows)
+
         if not sip.isdeleted(self.lastFocusedWidget):
+            self._debug_print(
+                f"Raising and activating last focused widget: {self.lastFocusedWidget}"
+            )
             self.lastFocusedWidget.raise_()
             self.lastFocusedWidget.activateWindow()
+        else:
+            self._debug_print("Last focused widget has been deleted")
+
         self.isMinimizedToTray = False
 
     def hideAll(self):
         """Hide all windows."""
         self.explicitlyHiddenWindows = self._visibleWindows()
+        self._debug_print(
+            f"Hiding all windows: {len(self.explicitlyHiddenWindows)} windows to hide"
+        )
+
         for w in self.explicitlyHiddenWindows:
+            self._debug_print(f"Hiding window: {w}")
             w.hide()
+
         self.isMinimizedToTray = True
+        self._debug_print("All windows hidden, set isMinimizedToTray=True")
 
     def _showWindows(self, windows):
+        self._debug_print(f"_showWindows called with {len(windows)} windows")
+
         for w in windows:
             if sip.isdeleted(w):
+                self._debug_print(f"Skipping deleted window: {w}")
                 continue
+
             if w.isMinimized() == Qt.WindowState.WindowMinimized:
-                # Windows that were maximized are not restored maximied unfortunately
+                self._debug_print(f"Restoring minimized window: {w}")
+                # Windows that were maximized are not restored maximized unfortunately
                 w.showNormal()
             else:
+                self._debug_print(f"Showing window with hide/show hack: {w}")
                 # hide(): hack that solves two problems:
                 # 1. focus the windows after TWO other non-Anki windows
                 # gained focus (Qt bug?). Causes a minor flicker when the
@@ -107,53 +171,94 @@ class AnkiSystemTray:
         Anki has some hidden windows and menus that we should ignore.
         """
         windows = []
-        for w in QApplication.topLevelWidgets():
+        all_widgets = QApplication.topLevelWidgets()
+
+        self._debug_print(
+            f"Checking {len(all_widgets)} top level widgets for visible windows"
+        )
+
+        for w in all_widgets:
             if w.isWindow() and not w.isHidden():
                 if not w.children():
+                    self._debug_print(f"Skipping window with no children: {w}")
                     continue
                 windows.append(w)
+                self._debug_print(f"Found visible window: {w}")
+            else:
+                self._debug_print(
+                    f"Skipping non-window or hidden widget: {w} (isWindow={w.isWindow()}, isHidden={w.isHidden()})"
+                )
+
+        self._debug_print(f"Found {len(windows)} visible windows")
         return windows
 
     def _anyWindowMinimized(self):
-        return any(
-            w.windowState() == Qt.WindowState.WindowMinimized
-            for w in self._visibleWindows()
+        visible_windows = self._visibleWindows()
+        minimized_windows = [
+            w
+            for w in visible_windows
+            if w.windowState() == Qt.WindowState.WindowMinimized
+        ]
+
+        self._debug_print(
+            f"Checking for minimized windows: {len(minimized_windows)} out of {len(visible_windows)} are minimized"
         )
 
+        return len(minimized_windows) > 0
+
     def _createTrayIcon(self):
+        self._debug_print("Creating system tray icon")
+
         trayIcon = QSystemTrayIcon(self.mw)
         ankiLogo = QIcon()
         ankiLogo.addPixmap(
             QPixmap("icons:anki.png"), QIcon.Mode.Normal, QIcon.State.Off
         )
         trayIcon.setIcon(QIcon.fromTheme("anki", ankiLogo))
+
+        self._debug_print("Setting up tray menu")
         trayMenu = QMenu(self.mw)
         trayIcon.setContextMenu(trayMenu)
         showAction = trayMenu.addAction("Show all windows")
         showAction.triggered.connect(self.showAll)
         trayMenu.addAction(self.mw.form.actionExit)
         trayIcon.activated.connect(self.onActivated)
+
+        self._debug_print("Tray icon created successfully")
         return trayIcon
 
     def _configureMw(self):
+        self._debug_print("Configuring main window")
+
         self.mw.closeEventFromAction = False
         self.mw.app.focusChanged.connect(self.onFocusChanged)
+
+        self._debug_print("Disconnecting and reconnecting exit action")
         # Disconnecting from close may have some side effects
         # (e.g. QApplication::lastWindowClosed() signal not emitted)
         self.mw.form.actionExit.triggered.disconnect(self.mw.close)
         self.mw.form.actionExit.triggered.connect(self.onExit)
+
+        self._debug_print("Wrapping close event")
         self.mw.closeEvent = self._wrapCloseCloseEvent()
 
     def _wrapCloseCloseEvent(self):
         """Override the close method of the mw instance."""
 
         def repl(self, event):
+            self.systemTray._debug_print(
+                f"Close event triggered: closeEventFromAction={self.closeEventFromAction}"
+            )
+
             if self.closeEventFromAction:
-                # The 'Exit' action in the sys tray context menu was activated
+                self.systemTray._debug_print(
+                    "Exit action was used, performing normal close"
+                )
                 AnkiQt.closeEvent(self, event)
             else:
-                # The main window X button was pressed
-                # self.col.save()
+                self.systemTray._debug_print(
+                    "X button was pressed, hiding to tray instead"
+                )
                 self.systemTray.hideAll()
                 event.ignore()
 
@@ -163,6 +268,13 @@ class AnkiSystemTray:
 def minimizeToTrayInit():
     if hasattr(mw, "trayIcon"):
         return
+
+    config = mw.addonManager.getConfig(__name__)
+    debug = config.get("debug", False)
+
+    if debug:
+        print("[MinimizeToTray] DEBUG: Initializing Minimize to Tray addon")
+
     mw.systemTray = AnkiSystemTray(mw)
 
 
