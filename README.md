@@ -8,6 +8,11 @@ This addon is primarily developed and tested on **Linux**.
 
 **Windows support is limited** due to platform-specific bugs that are often difficult to debug. Many of these issues appear to be caused by upstream problems in Qt or Anki's Windows implementation. If you encounter issues on Windows, please check the [issue tracker](https://github.com/simgunz/anki21-addons_minimize-to-tray/issues) for known problems and workarounds.
 
+Configuration
+=============
+- To start Anki minimized in the tray, go to *Tools > Add-ons > Minimize to tray > Config* and set `hide_on_startup` to `true`
+- To enable debug mode (for troubleshooting), set `debug` to `true` in the same config menu. Debug messages will be printed to the console.
+
 Author
 ======
 Simone Gaiarin \<simgunz AT gmail DOT com\>
