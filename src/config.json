@@ -1,1 +1,5 @@
-{"hide_on_startup": false, "debug": false} 
+{
+    "hide_on_startup": false,
+    "debug": true,
+    "global_hotkey": "Alt+F"
+}
