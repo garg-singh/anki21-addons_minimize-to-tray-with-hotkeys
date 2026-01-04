@@ -3,7 +3,7 @@ from types import MethodType
 
 from aqt.qt import (
     sip, Qt, QIcon, QPixmap, QApplication, QMenu, QSystemTrayIcon,
-    QAbstractNativeEventFilter
+    QAbstractNativeEventFilter, QEvent, QObject, QTimer
 )
 
 from aqt import gui_hooks, mw  # mw is the INSTANCE of the main window
@@ -37,6 +37,22 @@ class HotkeyEventFilter(QAbstractNativeEventFilter):
                 self.system_tray._debug_print(f"Error in nativeEventFilter: {e}")
         
         return False, 0
+
+
+# Event filter for minimize-to-tray functionality
+class MinimizeToTrayFilter(QObject):
+    def __init__(self, system_tray, parent=None):
+        super().__init__(parent)
+        self.system_tray = system_tray
+
+    def eventFilter(self, obj, event):
+        # Detect when the main window becomes minimized
+        if obj is self.system_tray.mw and event.type() == QEvent.Type.WindowStateChange:
+            if obj.isMinimized():
+                self.system_tray._debug_print("Minimize button pressed, scheduling hideAll")
+                # Delay hide to next Qt tick to avoid minimize glitches
+                QTimer.singleShot(0, self.system_tray.hideAll)
+        return False
 
 
 class AnkiSystemTray:
@@ -120,6 +136,7 @@ class AnkiSystemTray:
         self.explicitlyHiddenWindows = []
         self.windowVisibilitySnapshot = {}
         self.event_filter = None  # Store reference to prevent garbage collection
+        self.minimize_filter = None  # Store reference for minimize event filter
 
         self._debug_print("Creating tray icon")
         self.trayIcon = self._createTrayIcon()
@@ -181,7 +198,6 @@ class AnkiSystemTray:
 
     def onExit(self):
         self._debug_print("Exit action triggered")
-        self.mw.closeEventFromAction = True
         self.mw.close()
 
     def showAll(self):
@@ -219,6 +235,11 @@ class AnkiSystemTray:
 
     def hideAll(self):
         """Hide all windows."""
+        # Prevent re-snapshotting if already hidden
+        if self.isMinimizedToTray:
+            self._debug_print("Already minimized to tray, skipping hideAll")
+            return
+
         self._snapshotWindowStates()
         self.explicitlyHiddenWindows = self._visibleWindows()
         self._debug_print(
@@ -240,7 +261,7 @@ class AnkiSystemTray:
                 self._debug_print(f"Skipping deleted window: {w}")
                 continue
 
-            if w.isMinimized() == Qt.WindowState.WindowMinimized:
+            if w.windowState() == Qt.WindowState.WindowMinimized:
                 self._debug_print(f"Restoring minimized window: {w}")
                 w.showNormal()
             else:
@@ -346,15 +367,16 @@ class AnkiSystemTray:
     def _configureMw(self):
         self._debug_print("Configuring main window")
 
-        self.mw.closeEventFromAction = False
         self.mw.app.focusChanged.connect(self.onFocusChanged)
 
         self._debug_print("Disconnecting and reconnecting exit action")
         self.mw.form.actionExit.triggered.disconnect(self.mw.close)
         self.mw.form.actionExit.triggered.connect(self.onExit)
 
-        self._debug_print("Wrapping close event")
-        self.mw.closeEvent = self._wrapCloseCloseEvent()
+        # Install event filter for minimize-to-tray (not close event)
+        self._debug_print("Installing minimize-to-tray event filter")
+        self.minimize_filter = MinimizeToTrayFilter(self, self.mw)
+        self.mw.installEventFilter(self.minimize_filter)
         
         # Initialize hotkeys on Windows
         self._debug_print("Initializing hotkeys")
@@ -372,35 +394,6 @@ class AnkiSystemTray:
                 self._debug_print("Cleaned up hotkey on profile close")
             except Exception as e:
                 self._debug_print(f"Error cleaning up hotkey: {e}")
-
-
-    def _wrapCloseCloseEvent(self):
-        """Override the close method of the mw instance."""
-
-        def repl(self, event):
-            self.systemTray._debug_print(
-                f"Close event triggered: closeEventFromAction={self.closeEventFromAction}"
-            )
-
-            if self.closeEventFromAction:
-                self.systemTray._debug_print(
-                    "Exit action was used, performing normal close"
-                )
-                # Cleanup hotkey before closing
-                if sys.platform == "win32" and hasattr(self, 'hotkey_id'):
-                    import ctypes
-                    ctypes.windll.user32.UnregisterHotKey(int(self.winId()), self.hotkey_id)
-                    self.systemTray._debug_print("Unregistered hotkey")
-                
-                AnkiQt.closeEvent(self, event)
-            else:
-                self.systemTray._debug_print(
-                    "X button was pressed, hiding to tray instead"
-                )
-                self.systemTray.hideAll()
-                event.ignore()
-
-        return MethodType(repl, self.mw)
 
     def _initHotkeys(self):
         """Initialize global hotkeys for Windows."""
